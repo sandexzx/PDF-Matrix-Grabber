@@ -1,0 +1,18 @@
+[project]
+name = "dmx-grabber"
+version = "0.1.0"
+description = "Массовое считывание DataMatrix кодов из PDF файлов"
+requires-python = ">=3.10"
+dependencies = [
+    "pdf2image>=1.17.0",
+    "Pillow>=10.0.0",
+    "pylibdmtx>=0.1.10",
+    "opencv-python-headless>=4.8.0",
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+    "rich>=13.0.0",
+    "setuptools>=70.0.0",
+]
+
+[project.scripts]
+dmx-grabber = "dmx_grabber.__main__:main"
