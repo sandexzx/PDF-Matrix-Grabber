@@ -1,36 +1,67 @@
-"""Конвертация PDF-файлов в изображения."""
+"""Конвертация PDF-файлов в изображения через PyMuPDF (fitz).
+
+PyMuPDF в 3-5 раз быстрее pdf2image/poppler при рендеринге страниц,
+т.к. работает через MuPDF напрямую, без промежуточного вызова pdftoppm.
+"""
 
 from pathlib import Path
 
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 from PIL import Image
 
 
-def pdf_to_images(
-    pdf_path: Path, dpi: int = 300, first_page: int | None = None, last_page: int | None = None
-) -> list[Image.Image]:
-    """Конвертирует PDF в список PIL-изображений (одна страница = одно изображение).
+def get_page_count(pdf_path: Path) -> int:
+    """Возвращает количество страниц в PDF без полной загрузки."""
+    with fitz.open(str(pdf_path)) as doc:
+        return doc.page_count
+
+
+def render_page(pdf_path: Path, page_num: int, dpi: int = 300) -> Image.Image:
+    """Рендерит одну страницу PDF в PIL-изображение.
 
     Args:
-        pdf_path: Путь к PDF-файлу.
-        dpi: Разрешение рендеринга. 300 — оптимальный баланс скорости и качества.
-        first_page: Номер первой страницы (1-based). None = с начала.
-        last_page: Номер последней страницы (1-based). None = до конца.
+        pdf_path: Путь к PDF.
+        page_num: Номер страницы (0-based).
+        dpi: Разрешение рендеринга.
 
     Returns:
-        Список PIL.Image — по одному на каждую страницу.
-
-    Raises:
-        FileNotFoundError: Если файл не найден.
-        Exception: При ошибке конвертации (повреждённый PDF и т.д.).
+        PIL.Image одной страницы.
     """
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF не найден: {pdf_path}")
+    zoom = dpi / 72  # fitz работает в 72 dpi по умолчанию
+    matrix = fitz.Matrix(zoom, zoom)
 
-    kwargs: dict = {"pdf_path": str(pdf_path), "dpi": dpi}
-    if first_page is not None:
-        kwargs["first_page"] = first_page
-    if last_page is not None:
-        kwargs["last_page"] = last_page
+    with fitz.open(str(pdf_path)) as doc:
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
-    return convert_from_path(**kwargs)
+
+def render_pages_batch(
+    pdf_path: Path,
+    start: int,
+    end: int,
+    dpi: int = 300,
+) -> list[tuple[int, Image.Image]]:
+    """Рендерит пакет страниц за одно открытие файла.
+
+    Args:
+        pdf_path: Путь к PDF.
+        start: Начальная страница (0-based, inclusive).
+        end: Конечная страница (0-based, exclusive).
+        dpi: Разрешение.
+
+    Returns:
+        Список кортежей (page_num_0based, PIL.Image).
+    """
+    zoom = dpi / 72
+    matrix = fitz.Matrix(zoom, zoom)
+    results = []
+
+    with fitz.open(str(pdf_path)) as doc:
+        for page_num in range(start, min(end, doc.page_count)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            results.append((page_num, img))
+
+    return results

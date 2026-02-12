@@ -1,8 +1,16 @@
-"""Основной модуль обработки — оркестрация всего pipeline."""
+"""Основной модуль обработки — оркестрация pipeline.
 
+Поддерживает:
+- Параллельное декодирование страниц (multiprocessing)
+- Инкрементальную запись в Excel каждые N страниц
+- Возобновление после прерывания (resume)
+- Корректное завершение по Ctrl+C с сохранением прогресса
+"""
+
+import signal
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from pdf2image import pdfinfo_from_path
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -14,152 +22,79 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .converter import pdf_to_images
+from .converter import get_page_count, render_page
 from .decoder import decode_datamatrix
-from .exporter import export_to_excel
-from .models import FileStats, ProcessingResult, SessionStats, Status
+from .exporter import append_to_excel, load_progress
+from .models import ProcessingResult, SessionStats, Status
 from .parser import parse_honest_mark
 
-# Размер пакета для конвертации (сколько страниц за раз загружать в память)
-BATCH_SIZE = 20
+# Каждые SAVE_EVERY страниц результаты дописываются в Excel
+SAVE_EVERY = 50
 
 
-def _process_page(
-    image,
+def _decode_single_page(
+    pdf_path_str: str,
     page_num: int,
-    filename: str,
+    dpi: int,
     parse_marks: bool,
-) -> tuple[list[ProcessingResult], int]:
-    """Обработка одной страницы: декодирование + парсинг.
+) -> list[ProcessingResult]:
+    """Обработка одной страницы в отдельном процессе.
 
-    Returns:
-        Кортеж (результаты, количество найденных кодов).
-    """
-    results: list[ProcessingResult] = []
-    codes_found = 0
-
-    codes = decode_datamatrix(image)
-
-    if codes:
-        for code_value in codes:
-            result = ProcessingResult(
-                filename=filename,
-                page=page_num,
-                datamatrix_raw=code_value,
-                status=Status.OK,
-            )
-            if parse_marks:
-                mark = parse_honest_mark(code_value)
-                result.gtin = mark.gtin
-                result.serial = mark.serial
-                result.verification_key = mark.verification_key
-                result.crypto = mark.crypto
-            results.append(result)
-        codes_found = len(codes)
-    else:
-        results.append(
-            ProcessingResult(
-                filename=filename,
-                page=page_num,
-                status=Status.NOT_FOUND,
-            )
-        )
-
-    return results, codes_found
-
-
-def process_single_pdf(
-    pdf_path: Path,
-    dpi: int = 300,
-    parse_marks: bool = True,
-    page_limit: int | None = None,
-    progress: Progress | None = None,
-    page_task_id: int | None = None,
-    pages_processed_global: int = 0,
-) -> tuple[list[ProcessingResult], FileStats, int]:
-    """Обрабатывает один PDF-файл: конвертация → декодирование → парсинг.
-
-    Конвертирует страницы пакетами по BATCH_SIZE, чтобы не загружать
-    все 3000+ страниц в память разом.
+    Рендерит страницу → декодирует DataMatrix → парсит ЧЗ.
+    Эта функция запускается в ProcessPoolExecutor.
 
     Args:
-        pdf_path: Путь к PDF.
+        pdf_path_str: Путь к PDF (строка — для pickle-совместимости).
+        page_num: Номер страницы (0-based).
         dpi: Разрешение рендеринга.
-        parse_marks: Пытаться ли парсить код как Честный Знак.
-        page_limit: Общий лимит страниц для обработки (None = без лимита).
-        progress: Rich Progress для обновления прогресса страниц.
-        page_task_id: ID задачи прогресса для страниц.
-        pages_processed_global: Сколько страниц уже обработано глобально.
+        parse_marks: Парсить ли как Честный Знак.
 
     Returns:
-        Кортеж (список результатов, статистика файла, обработано страниц глобально).
+        Список ProcessingResult для этой страницы.
     """
+    pdf_path = Path(pdf_path_str)
     filename = pdf_path.name
-    stats = FileStats(filename=filename)
-    results: list[ProcessingResult] = []
+    display_page = page_num + 1  # 1-based для пользователя
 
     try:
-        # Узнаём количество страниц без конвертации
-        info = pdfinfo_from_path(str(pdf_path))
-        total_pages = info["Pages"]
-        stats.total_pages = total_pages
+        image = render_page(pdf_path, page_num, dpi=dpi)
+        codes = decode_datamatrix(image)
+        del image  # освобождаем RAM
 
-        # Определяем сколько страниц обработать в этом файле
-        if page_limit is not None:
-            remaining = page_limit - pages_processed_global
-            if remaining <= 0:
-                return results, stats, pages_processed_global
-            pages_to_process = min(total_pages, remaining)
-        else:
-            pages_to_process = total_pages
-
-        if progress and page_task_id is not None:
-            progress.update(
-                page_task_id,
-                total=(progress.tasks[page_task_id].total or 0) + pages_to_process,
-            )
-
-        # Обрабатываем пакетами
-        for batch_start in range(1, pages_to_process + 1, BATCH_SIZE):
-            batch_end = min(batch_start + BATCH_SIZE - 1, pages_to_process)
-
-            images = pdf_to_images(
-                pdf_path, dpi=dpi, first_page=batch_start, last_page=batch_end
-            )
-
-            for i, image in enumerate(images):
-                page_num = batch_start + i
-
-                page_results, codes_count = _process_page(
-                    image, page_num, filename, parse_marks
+        if codes:
+            results = []
+            for code_value in codes:
+                result = ProcessingResult(
+                    filename=filename,
+                    page=display_page,
+                    datamatrix_raw=code_value,
+                    status=Status.OK,
                 )
-                results.extend(page_results)
-                stats.codes_found += codes_count
-
-                if codes_count == 0:
-                    stats.pages_empty += 1
-
-                pages_processed_global += 1
-
-                if progress and page_task_id is not None:
-                    progress.advance(page_task_id)
-
-                # Освобождаем память
-                del image
-
-            del images
+                if parse_marks:
+                    mark = parse_honest_mark(code_value)
+                    result.gtin = mark.gtin
+                    result.serial = mark.serial
+                    result.verification_key = mark.verification_key
+                    result.crypto = mark.crypto
+                results.append(result)
+            return results
+        else:
+            return [
+                ProcessingResult(
+                    filename=filename,
+                    page=display_page,
+                    status=Status.NOT_FOUND,
+                )
+            ]
 
     except Exception as e:
-        stats.error = str(e)
-        results.append(
+        return [
             ProcessingResult(
                 filename=filename,
-                page=None,
+                page=display_page,
                 status=f"{Status.ERROR}: {e}",
             )
-        )
-
-    return results, stats, pages_processed_global
+        ]
 
 
 def run(
@@ -168,18 +103,19 @@ def run(
     dpi: int = 300,
     parse_marks: bool = True,
     page_limit: int | None = None,
+    workers: int = 1,
+    resume: bool = False,
 ) -> SessionStats:
     """Запускает полный pipeline обработки.
-
-    Сканирует папку, последовательно обрабатывает каждый PDF,
-    собирает статистику, экспортирует результат в Excel.
 
     Args:
         input_dir: Директория с PDF-файлами.
         output_path: Путь для Excel-результата.
         dpi: Разрешение рендеринга.
         parse_marks: Парсить ли коды как Честный Знак.
-        page_limit: Максимальное количество страниц для обработки (None = все).
+        page_limit: Макс. кол-во страниц (None = все).
+        workers: Количество параллельных процессов (1 = последовательно).
+        resume: Продолжить с места прерывания.
 
     Returns:
         SessionStats — общая статистика сессии.
@@ -190,9 +126,52 @@ def run(
     if not pdf_files:
         return session
 
-    all_results: list[ProcessingResult] = []
-    pages_processed_global = 0
+    # --- Resume: загружаем уже обработанные страницы ---
+    done_pages: set[tuple[str, int]] = set()
+    if resume:
+        done_pages = load_progress(output_path)
+        session.resumed_from = len(done_pages)
 
+    # --- Строим очередь задач: (pdf_path, page_0based) ---
+    task_queue: list[tuple[Path, int]] = []
+    for pdf_path in pdf_files:
+        try:
+            total = get_page_count(pdf_path)
+        except Exception as e:
+            session.files_with_errors += 1
+            session.errors.append(f"{pdf_path.name}: {e}")
+            continue
+
+        session.total_pages += total
+
+        for p in range(total):
+            display_page = p + 1
+            if (pdf_path.name, display_page) in done_pages:
+                continue  # пропускаем уже обработанные
+            task_queue.append((pdf_path, p))
+
+        session.processed_files += 1
+
+    # Лимит
+    if page_limit is not None:
+        task_queue = task_queue[:page_limit]
+
+    total_to_process = len(task_queue)
+    if total_to_process == 0:
+        return session
+
+    # --- Буфер и состояние ---
+    buffer: list[ProcessingResult] = []
+    interrupted = False
+
+    def _flush_buffer() -> None:
+        """Сбрасывает буфер в Excel."""
+        nonlocal buffer
+        if buffer:
+            append_to_excel(buffer, output_path)
+            buffer = []
+
+    # --- Progress bar ---
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -205,43 +184,93 @@ def run(
     )
 
     with progress:
-        file_task = progress.add_task("📄 Файлы", total=len(pdf_files))
-        page_task = progress.add_task("📃 Страницы", total=0)
+        page_task = progress.add_task(
+            "📃 Страницы", total=total_to_process
+        )
 
-        for pdf_path in pdf_files:
-            # Проверяем лимит
-            if page_limit is not None and pages_processed_global >= page_limit:
-                break
+        if workers <= 1:
+            # === Последовательный режим ===
+            try:
+                for pdf_path, page_num in task_queue:
+                    results = _decode_single_page(
+                        str(pdf_path), page_num, dpi, parse_marks
+                    )
 
-            progress.update(file_task, description=f"📄 {pdf_path.name[:40]}")
+                    for r in results:
+                        buffer.append(r)
+                        if r.status == Status.OK:
+                            session.total_codes += 1
+                        elif r.status == Status.NOT_FOUND:
+                            session.pages_empty += 1
 
-            results, file_stats, pages_processed_global = process_single_pdf(
-                pdf_path,
-                dpi=dpi,
-                parse_marks=parse_marks,
-                page_limit=page_limit,
-                progress=progress,
-                page_task_id=page_task,
-                pages_processed_global=pages_processed_global,
-            )
+                    session.pages_processed += 1
+                    progress.advance(page_task)
 
-            all_results.extend(results)
+                    # Инкрементальное сохранение
+                    if len(buffer) >= SAVE_EVERY:
+                        _flush_buffer()
 
-            # Обновляем общую статистику
-            session.processed_files += 1
-            session.total_pages += file_stats.total_pages
-            session.pages_processed = pages_processed_global
-            session.total_codes += file_stats.codes_found
-            session.pages_empty += file_stats.pages_empty
+            except KeyboardInterrupt:
+                interrupted = True
 
-            if file_stats.error:
-                session.files_with_errors += 1
-                session.errors.append(f"{file_stats.filename}: {file_stats.error}")
+        else:
+            # === Параллельный режим ===
+            # Игнорируем SIGINT в дочерних процессах — корректно завершаем из главного
+            original_sigint = signal.getsignal(signal.SIGINT)
 
-            progress.advance(file_task)
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=workers,
+                    initializer=signal.signal,
+                    initargs=(signal.SIGINT, signal.SIG_IGN),
+                ) as executor:
+                    futures = {
+                        executor.submit(
+                            _decode_single_page,
+                            str(pdf_path),
+                            page_num,
+                            dpi,
+                            parse_marks,
+                        ): (pdf_path.name, page_num)
+                        for pdf_path, page_num in task_queue
+                    }
 
-    # Экспорт
-    if all_results:
-        export_to_excel(all_results, output_path)
+                    try:
+                        for future in as_completed(futures):
+                            try:
+                                results = future.result()
+                            except Exception as e:
+                                fname, pnum = futures[future]
+                                results = [
+                                    ProcessingResult(
+                                        filename=fname,
+                                        page=pnum + 1,
+                                        status=f"{Status.ERROR}: {e}",
+                                    )
+                                ]
+
+                            for r in results:
+                                buffer.append(r)
+                                if r.status == Status.OK:
+                                    session.total_codes += 1
+                                elif r.status == Status.NOT_FOUND:
+                                    session.pages_empty += 1
+
+                            session.pages_processed += 1
+                            progress.advance(page_task)
+
+                            if len(buffer) >= SAVE_EVERY:
+                                _flush_buffer()
+
+                    except KeyboardInterrupt:
+                        interrupted = True
+                        executor.shutdown(wait=False, cancel_futures=True)
+
+            finally:
+                signal.signal(signal.SIGINT, original_sigint)
+
+    # --- Финальный сброс буфера ---
+    _flush_buffer()
+    session.interrupted = interrupted
 
     return session

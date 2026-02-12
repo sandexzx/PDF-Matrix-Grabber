@@ -27,17 +27,6 @@ class ProcessingResult:
 
 
 @dataclass
-class FileStats:
-    """Статистика обработки одного файла."""
-
-    filename: str
-    total_pages: int = 0
-    codes_found: int = 0
-    pages_empty: int = 0
-    error: str | None = None
-
-
-@dataclass
 class SessionStats:
     """Общая статистика сессии обработки."""
 
@@ -49,6 +38,8 @@ class SessionStats:
     pages_empty: int = 0
     files_with_errors: int = 0
     errors: list[str] = field(default_factory=list)
+    resumed_from: int = 0        # сколько страниц пропущено при resume
+    interrupted: bool = False    # было ли прервано по Ctrl+C
 
     @property
     def success_rate(self) -> float:
