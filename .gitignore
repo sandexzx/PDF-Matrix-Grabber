@@ -29,6 +29,7 @@ output/*.csv
 output/*.csv.progress.csv
 data/input/*.pdf
 data/backup/*.pdf
+runtime/python-installer/python-*.exe
 
 # Keep directories
 !data/input/.gitkeep

@@ -193,7 +193,7 @@ def run(
 
     with progress:
         page_task = progress.add_task(
-            "📃 Страницы", total=total_to_process
+            "Страницы", total=total_to_process
         )
 
         if workers <= 1:
