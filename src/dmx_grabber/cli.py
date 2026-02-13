@@ -111,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "-o", "--output",
         type=Path,
         default=None,
-        help="Путь для Excel-файла (по умолчанию: output/results.xlsx)",
+        help="Путь для CSV-файла (по умолчанию: output/results.csv)",
     )
     parser.add_argument(
         "--dpi",
@@ -181,8 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     # Формируем путь для результата
     if args.output:
         output_path = args.output.resolve()
+        if output_path.suffix.lower() != ".csv":
+            output_path = output_path.with_suffix(".csv")
+            console.print(
+                f"[yellow]Расширение результата изменено на .csv:[/] {output_path}"
+            )
     else:
-        output_path = Path("output").resolve() / "results.xlsx"
+        output_path = Path("output").resolve() / "results.csv"
 
     # Режим работы
     if args.workers > 1:

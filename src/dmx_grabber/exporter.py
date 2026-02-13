@@ -1,4 +1,4 @@
-"""Экспорт результатов в Excel — только список DataMatrix-кодов."""
+"""Экспорт результатов в CSV — только список DataMatrix-кодов."""
 
 from pathlib import Path
 import re
@@ -7,26 +7,25 @@ import pandas as pd
 
 from .models import ProcessingResult
 
-_ILLEGAL_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
+# Сохраняем GS (0x1D), остальные управляющие символы экранируем.
+_ILLEGAL_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1C\x1E-\x1F]")
 _PROGRESS_SUFFIX = ".progress.csv"
 
 
-def _sanitize_excel_string(value: str) -> str:
-    """Удаляет/экранирует запрещённые для Excel управляющие символы."""
+def _sanitize_csv_string(value: str) -> str:
+    """Экранирует проблемные управляющие символы для CSV (кроме GS)."""
 
     def _replace(match: re.Match[str]) -> str:
         ch = match.group(0)
-        if ch == "\x1d":
-            return "<GS>"
         return f"\\x{ord(ch):02x}"
 
     return _ILLEGAL_CONTROL_CHARS_RE.sub(_replace, value)
 
 
-def _sanitize_excel_value(value: object) -> object:
-    """Подготавливает значение к безопасной записи в Excel."""
+def _sanitize_csv_value(value: object) -> object:
+    """Подготавливает значение к безопасной записи в CSV."""
     if isinstance(value, str):
-        return _sanitize_excel_string(value)
+        return _sanitize_csv_string(value)
     return value
 
 
@@ -47,7 +46,7 @@ def _results_to_codes(results: list[ProcessingResult]) -> list[str]:
             continue
         if not result.datamatrix_raw:
             continue
-        value = _sanitize_excel_value(result.datamatrix_raw)
+        value = _sanitize_csv_value(result.datamatrix_raw)
         if isinstance(value, str):
             codes.append(value)
     return codes
@@ -84,35 +83,8 @@ def _append_progress(results: list[ProcessingResult], output_path: Path) -> None
     )
 
 
-def _read_existing_codes(output_path: Path) -> pd.DataFrame:
-    """Читает существующий Excel и нормализует до одного столбца кодов."""
-    try:
-        df = pd.read_excel(
-            str(output_path),
-            engine="openpyxl",
-            header=None,
-            dtype="string",
-        )
-        if df.shape[1] <= 1:
-            return df
-    except Exception:
-        pass
-
-    # fallback для старого формата с заголовками и многими столбцами
-    try:
-        old_df = pd.read_excel(str(output_path), engine="openpyxl", dtype="string")
-        if "DataMatrix (raw)" in old_df.columns:
-            return old_df[["DataMatrix (raw)"]]
-        if old_df.shape[1] > 0:
-            return old_df.iloc[:, :1]
-    except Exception:
-        return pd.DataFrame()
-
-    return pd.DataFrame()
-
-
-def export_to_excel(results: list[ProcessingResult], output_path: Path) -> Path:
-    """Экспортирует результаты обработки в Excel-файл.
+def export_to_csv(results: list[ProcessingResult], output_path: Path) -> Path:
+    """Экспортирует результаты обработки в CSV-файл.
 
     Args:
         results: Список результатов обработки.
@@ -124,20 +96,26 @@ def export_to_excel(results: list[ProcessingResult], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     codes = _results_to_codes(results)
     df = pd.DataFrame(codes)
-    df.to_excel(str(output_path), index=False, header=False, engine="openpyxl")
+    df.to_csv(
+        str(output_path),
+        index=False,
+        header=False,
+        encoding="utf-8",
+        lineterminator="\n",
+    )
     _append_progress(results, output_path)
     return output_path
 
 
-def append_to_excel(results: list[ProcessingResult], output_path: Path) -> None:
-    """Дописывает результаты к существующему Excel-файлу.
+def append_to_csv(results: list[ProcessingResult], output_path: Path) -> None:
+    """Дописывает результаты к существующему CSV-файлу.
 
-    Если файл не существует — создаёт новый. Если существует —
-    читает текущее содержимое, дописывает новые строки и перезаписывает.
+    Если файл не существует — создаёт новый.
+    Если существует — дописывает новые строки в конец.
 
     Args:
         results: Новые результаты для добавления.
-        output_path: Путь к Excel-файлу.
+        output_path: Путь к CSV-файлу.
     """
     if not results:
         return
@@ -150,23 +128,23 @@ def append_to_excel(results: list[ProcessingResult], output_path: Path) -> None:
         return
 
     new_df = pd.DataFrame(codes)
-
-    if output_path.exists():
-        existing_df = _read_existing_codes(output_path)
-        df = pd.concat([existing_df, new_df], ignore_index=True)
-    else:
-        df = new_df
-
-    df.to_excel(str(output_path), index=False, header=False, engine="openpyxl")
+    new_df.to_csv(
+        str(output_path),
+        index=False,
+        header=False,
+        encoding="utf-8",
+        lineterminator="\n",
+        mode="a",
+    )
 
 
 def load_progress(output_path: Path) -> set[tuple[str, int]]:
-    """Загружает уже обработанные страницы из существующего Excel.
+    """Загружает уже обработанные страницы из sidecar-файла прогресса.
 
     Используется для возобновления после прерывания.
 
     Args:
-        output_path: Путь к Excel-файлу.
+        output_path: Путь к результирующему файлу.
 
     Returns:
         Множество кортежей (filename, page_num) — уже обработанные.
@@ -185,6 +163,7 @@ def load_progress(output_path: Path) -> set[tuple[str, int]]:
     if not output_path.exists():
         return set()
 
+    # fallback: старый формат xlsx с метаданными
     try:
         df = pd.read_excel(str(output_path), engine="openpyxl")
         if "Файл" not in df.columns or "Страница" not in df.columns:
@@ -196,3 +175,8 @@ def load_progress(output_path: Path) -> set[tuple[str, int]]:
         }
     except Exception:
         return set()
+
+
+# Backward compatibility для существующих импортов.
+export_to_excel = export_to_csv
+append_to_excel = append_to_csv

@@ -2,7 +2,7 @@
 
 Поддерживает:
 - Параллельное декодирование страниц (multiprocessing)
-- Инкрементальную запись в Excel каждые N страниц
+- Инкрементальную запись в CSV каждые N страниц
 - Возобновление после прерывания (resume)
 - Корректное завершение по Ctrl+C с сохранением прогресса
 """
@@ -24,11 +24,11 @@ from rich.progress import (
 
 from .converter import ROI_NORM, get_page_count, render_page
 from .decoder import decode_datamatrix
-from .exporter import append_to_excel, load_progress
+from .exporter import append_to_csv, load_progress
 from .models import ProcessingResult, SessionStats, Status
-from .parser import parse_honest_mark
+from .parser import normalize_gs1_raw, parse_honest_mark
 
-# Каждые SAVE_EVERY страниц результаты дописываются в Excel
+# Каждые SAVE_EVERY страниц результаты дописываются в CSV
 SAVE_EVERY = 50
 
 
@@ -70,14 +70,15 @@ def _decode_single_page(
         if codes:
             results = []
             for code_value in codes:
+                normalized_code = normalize_gs1_raw(code_value)
                 result = ProcessingResult(
                     filename=filename,
                     page=display_page,
-                    datamatrix_raw=code_value,
+                    datamatrix_raw=normalized_code,
                     status=Status.OK,
                 )
                 if parse_marks:
-                    mark = parse_honest_mark(code_value)
+                    mark = parse_honest_mark(normalized_code)
                     result.gtin = mark.gtin
                     result.serial = mark.serial
                     result.verification_key = mark.verification_key
@@ -116,7 +117,7 @@ def run(
 
     Args:
         input_dir: Директория с PDF-файлами.
-        output_path: Путь для Excel-результата.
+        output_path: Путь для CSV-результата.
         dpi: Разрешение рендеринга.
         parse_marks: Парсить ли коды как Честный Знак.
         page_limit: Макс. кол-во страниц (None = все).
@@ -161,6 +162,7 @@ def run(
     # Лимит
     if page_limit is not None:
         task_queue = task_queue[:page_limit]
+    ordered_page_keys = [(pdf_path.name, page_num + 1) for pdf_path, page_num in task_queue]
 
     total_to_process = len(task_queue)
     if total_to_process == 0:
@@ -171,10 +173,10 @@ def run(
     interrupted = False
 
     def _flush_buffer() -> None:
-        """Сбрасывает буфер в Excel."""
+        """Сбрасывает буфер в CSV."""
         nonlocal buffer
         if buffer:
-            append_to_excel(buffer, output_path)
+            append_to_csv(buffer, output_path)
             buffer = []
 
     # --- Progress bar ---
@@ -223,6 +225,21 @@ def run(
             # === Параллельный режим ===
             # Игнорируем SIGINT в дочерних процессах — корректно завершаем из главного
             original_sigint = signal.getsignal(signal.SIGINT)
+            ready_pages: dict[tuple[str, int], list[ProcessingResult]] = {}
+            next_page_idx = 0
+
+            def _drain_ready_pages() -> None:
+                """Переносит в буфер только последовательные страницы в порядке PDF."""
+                nonlocal next_page_idx
+                while next_page_idx < len(ordered_page_keys):
+                    page_key = ordered_page_keys[next_page_idx]
+                    page_results = ready_pages.pop(page_key, None)
+                    if page_results is None:
+                        break
+                    buffer.extend(page_results)
+                    next_page_idx += 1
+                    if len(buffer) >= SAVE_EVERY:
+                        _flush_buffer()
 
             try:
                 with ProcessPoolExecutor(
@@ -237,36 +254,36 @@ def run(
                             page_num,
                             dpi,
                             parse_marks,
-                        ): (pdf_path.name, page_num)
+                        ): (pdf_path.name, page_num + 1)
                         for pdf_path, page_num in task_queue
                     }
 
                     try:
                         for future in as_completed(futures):
+                            page_key = futures[future]
                             try:
                                 results = future.result()
                             except Exception as e:
-                                fname, pnum = futures[future]
+                                fname, display_page = page_key
                                 results = [
                                     ProcessingResult(
                                         filename=fname,
-                                        page=pnum + 1,
+                                        page=display_page,
                                         status=f"{Status.ERROR}: {e}",
                                     )
                                 ]
 
                             for r in results:
-                                buffer.append(r)
                                 if r.status == Status.OK:
                                     session.total_codes += 1
                                 elif r.status == Status.NOT_FOUND:
                                     session.pages_empty += 1
 
+                            ready_pages[page_key] = results
+                            _drain_ready_pages()
+
                             session.pages_processed += 1
                             progress.advance(page_task)
-
-                            if len(buffer) >= SAVE_EVERY:
-                                _flush_buffer()
 
                     except KeyboardInterrupt:
                         interrupted = True

@@ -2,7 +2,7 @@
 """DMX Grabber — точка входа.
 
 Запуск:
-    python main.py -i data/input -o output/results.xlsx
+    python main.py -i data/input -o output/results.csv
     python main.py --help
 """
 

@@ -10,6 +10,15 @@ SECOND_PASS_TIMEOUT_MS = 800
 MAX_CODES_PER_PAGE = 1
 
 
+def _decode_payload(data: bytes) -> str:
+    """Декодирует байты DataMatrix, сохраняя управляющие символы."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        # 1:1 отображение байтов, чтобы не потерять спецсимволы вроде GS (0x1D).
+        return data.decode("latin-1")
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
     """Предобработка изображения для улучшения распознавания.
 
@@ -60,7 +69,7 @@ def decode_datamatrix(image: Image.Image, use_preprocessing: bool = True) -> lis
     )
 
     if results:
-        return [r.data.decode("utf-8", errors="replace") for r in results]
+        return [_decode_payload(r.data) for r in results]
 
     # Вторая попытка — с предобработкой
     if use_preprocessing:
@@ -71,6 +80,6 @@ def decode_datamatrix(image: Image.Image, use_preprocessing: bool = True) -> lis
             max_count=MAX_CODES_PER_PAGE,
         )
         if results:
-            return [r.data.decode("utf-8", errors="replace") for r in results]
+            return [_decode_payload(r.data) for r in results]
 
     return []

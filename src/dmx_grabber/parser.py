@@ -1,12 +1,18 @@
 """Парсинг кодов маркировки Честный Знак (GS1 DataMatrix)."""
 
 from dataclasses import dataclass
+import re
 
 # GS (Group Separator) — разделитель полей в GS1
 GS = "\x1d"
 AI_SERIAL = "21"
 AI_KEYS = ("91", "93")
 AI_CRYPTO = "92"
+_VISIBLE_GS_RE = re.compile(
+    r"(?i)(<GS>|\[GS\]|\{GS\}|␝|\\x1d|\\u001d|\^\])"
+)
+_LEADING_PREFIXES = ("]d2", "<FNC1>")
+_AI_AFTER_GS = ("91", "92", "93")
 
 
 @dataclass
@@ -28,6 +34,44 @@ class HonestMarkCode:
         return bool(self.gtin and self.serial)
 
 
+def normalize_gs1_raw(raw_code: str) -> str:
+    """Нормализует код GS1 к единому виду с разделителем GS (0x1D)."""
+    code = raw_code.strip()
+
+    # У разных сканеров возможны префиксы symbology/FNC1.
+    changed = True
+    while changed and code:
+        changed = False
+        for prefix in _LEADING_PREFIXES:
+            if code.startswith(prefix):
+                code = code[len(prefix) :]
+                changed = True
+        # В ряде интеграций FNC1 приходит как байт 0xE8.
+        if code and ord(code[0]) == 0xE8:
+            code = code[1:]
+            changed = True
+        if code.startswith(GS):
+            code = code[1:]
+            changed = True
+
+    # Нормализуем видимые/экранированные формы GS в реальный 0x1D.
+    code = _VISIBLE_GS_RE.sub(GS, code)
+
+    # Эвристика для интеграций, где разделитель ошибочно передан буквами "GS".
+    # Подменяем только маркеры перед служебными AI 91/92/93 и только в основной части кода.
+    for ai in _AI_AFTER_GS:
+        marker = f"GS{ai}"
+        start = 18  # 01 + GTIN(14) + 21 + минимум 1 символ serial
+        while True:
+            idx = code.find(marker, start)
+            if idx == -1:
+                break
+            code = f"{code[:idx]}{GS}{code[idx + 2:]}"
+            start = idx + 1
+
+    return code
+
+
 def parse_honest_mark(raw_code: str) -> HonestMarkCode:
     """Парсит строку DataMatrix в структуру Честного Знака.
 
@@ -40,16 +84,10 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
     Returns:
         HonestMarkCode с распарсенными полями.
     """
-    result = HonestMarkCode(raw=raw_code)
+    code = normalize_gs1_raw(raw_code)
+    result = HonestMarkCode(raw=code)
 
     try:
-        code = raw_code.strip()
-        # У некоторых сканеров в начале добавляется symbology id, например ]d2.
-        if code.startswith("]d2"):
-            code = code[3:]
-        if code.startswith(GS):
-            code = code[1:]
-
         # AI 01 — GTIN (всегда 14 цифр)
         if "01" in code:
             idx = code.index("01")
@@ -70,10 +108,21 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
             gs_pos = serial_data.find(GS)
             ai_candidates = [serial_data.find(ai) for ai in (*AI_KEYS, AI_CRYPTO)]
             ai_positions = [pos for pos in ai_candidates if pos != -1 and pos <= 20]
+            # Некоторые интеграции подставляют буквальный "GS" вместо 0x1D.
+            plain_gs_candidates = [
+                serial_data.find(f"GS{ai}") for ai in (*AI_KEYS, AI_CRYPTO)
+            ]
+            plain_gs_positions = [
+                pos for pos in plain_gs_candidates if pos != -1 and pos <= 20
+            ]
 
             if gs_pos != -1:
                 result.serial = serial_data[:gs_pos]
                 code_rest = serial_data[gs_pos + 1 :]
+            elif plain_gs_positions:
+                next_ai_pos = min(plain_gs_positions)
+                result.serial = serial_data[:next_ai_pos]
+                code_rest = serial_data[next_ai_pos + 2 :]
             elif ai_positions:
                 next_ai_pos = min(ai_positions)
                 result.serial = serial_data[:next_ai_pos]
@@ -96,6 +145,11 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
             if len(key) == 4:
                 result.verification_key = key
             code_rest = code_rest[key_pos + 6 :]
+
+        if code_rest.startswith("GS"):
+            code_rest = code_rest[2:]
+        if code_rest.startswith(GS):
+            code_rest = code_rest[1:]
 
         # AI 92 — Криптохвост (остаток)
         if AI_CRYPTO in code_rest:
