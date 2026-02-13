@@ -5,6 +5,10 @@ import numpy as np
 from PIL import Image
 from pylibdmtx.pylibdmtx import decode as dmtx_decode
 
+FIRST_PASS_TIMEOUT_MS = 200
+SECOND_PASS_TIMEOUT_MS = 800
+MAX_CODES_PER_PAGE = 1
+
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """Предобработка изображения для улучшения распознавания.
@@ -35,10 +39,11 @@ def preprocess_image(image: Image.Image) -> Image.Image:
 
 
 def decode_datamatrix(image: Image.Image, use_preprocessing: bool = True) -> list[str]:
-    """Декодирует все DataMatrix коды на изображении.
+    """Декодирует DataMatrix на изображении.
 
     Сначала пытается декодировать без предобработки (быстрее).
     Если не нашёл — применяет предобработку и повторяет.
+    Оптимизировано под кейс: не более 1 кода на страницу.
 
     Args:
         image: PIL-изображение страницы.
@@ -48,7 +53,11 @@ def decode_datamatrix(image: Image.Image, use_preprocessing: bool = True) -> lis
         Список строк — декодированные DataMatrix значения.
     """
     # Первая попытка — без обработки (быстро)
-    results = dmtx_decode(image, timeout=5000)
+    results = dmtx_decode(
+        image,
+        timeout=FIRST_PASS_TIMEOUT_MS,
+        max_count=MAX_CODES_PER_PAGE,
+    )
 
     if results:
         return [r.data.decode("utf-8", errors="replace") for r in results]
@@ -56,7 +65,11 @@ def decode_datamatrix(image: Image.Image, use_preprocessing: bool = True) -> lis
     # Вторая попытка — с предобработкой
     if use_preprocessing:
         processed = preprocess_image(image)
-        results = dmtx_decode(processed, timeout=10000)
+        results = dmtx_decode(
+            processed,
+            timeout=SECOND_PASS_TIMEOUT_MS,
+            max_count=MAX_CODES_PER_PAGE,
+        )
         if results:
             return [r.data.decode("utf-8", errors="replace") for r in results]
 

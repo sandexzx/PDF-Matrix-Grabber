@@ -22,7 +22,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .converter import get_page_count, render_page
+from .converter import ROI_NORM, get_page_count, render_page
 from .decoder import decode_datamatrix
 from .exporter import append_to_excel, load_progress
 from .models import ProcessingResult, SessionStats, Status
@@ -57,9 +57,15 @@ def _decode_single_page(
     display_page = page_num + 1  # 1-based для пользователя
 
     try:
-        image = render_page(pdf_path, page_num, dpi=dpi)
+        image = render_page(pdf_path, page_num, dpi=dpi, use_roi=True)
         codes = decode_datamatrix(image)
         del image  # освобождаем RAM
+
+        # Если работаем с ROI и код в зоне не найден — пробуем полный лист.
+        if not codes and ROI_NORM is not None:
+            full_image = render_page(pdf_path, page_num, dpi=dpi, use_roi=False)
+            codes = decode_datamatrix(full_image)
+            del full_image
 
         if codes:
             results = []
