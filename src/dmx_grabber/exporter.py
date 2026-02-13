@@ -1,6 +1,7 @@
 """Экспорт результатов в Excel — инкрементальный и финальный."""
 
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -18,18 +19,51 @@ COLUMNS = [
     "Статус",
 ]
 
+_ILLEGAL_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
+_TEXT_COLUMNS = [
+    "Файл",
+    "DataMatrix (raw)",
+    "GTIN",
+    "Серийный номер",
+    "Ключ проверки",
+    "Криптохвост",
+    "Статус",
+]
+_READ_DTYPE = {col: "string" for col in _TEXT_COLUMNS}
+
+
+def _sanitize_excel_string(value: str) -> str:
+    """Удаляет/экранирует запрещённые для Excel управляющие символы."""
+
+    def _replace(match: re.Match[str]) -> str:
+        ch = match.group(0)
+        if ch == "\x1d":
+            return "<GS>"
+        return f"\\x{ord(ch):02x}"
+
+    return _ILLEGAL_CONTROL_CHARS_RE.sub(_replace, value)
+
+
+def _sanitize_excel_value(value: object) -> object:
+    """Подготавливает значение к безопасной записи в Excel."""
+    if isinstance(value, str):
+        return _sanitize_excel_string(value)
+    return value
+
 
 def _result_to_row(r: ProcessingResult) -> dict:
     """Преобразует один результат в строку для DataFrame."""
     return {
-        "Файл": r.filename,
+        "Файл": _sanitize_excel_value(r.filename),
         "Страница": r.page,
-        "DataMatrix (raw)": r.datamatrix_raw,
-        "GTIN": r.gtin,
-        "Серийный номер": r.serial,
-        "Ключ проверки": r.verification_key,
-        "Криптохвост": r.crypto,
-        "Статус": r.status.value if hasattr(r.status, "value") else str(r.status),
+        "DataMatrix (raw)": _sanitize_excel_value(r.datamatrix_raw),
+        "GTIN": _sanitize_excel_value(r.gtin),
+        "Серийный номер": _sanitize_excel_value(r.serial),
+        "Ключ проверки": _sanitize_excel_value(r.verification_key),
+        "Криптохвост": _sanitize_excel_value(r.crypto),
+        "Статус": _sanitize_excel_value(
+            r.status.value if hasattr(r.status, "value") else str(r.status)
+        ),
     }
 
 
@@ -66,9 +100,24 @@ def append_to_excel(results: list[ProcessingResult], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     new_rows = [_result_to_row(r) for r in results]
     new_df = pd.DataFrame(new_rows, columns=COLUMNS)
+    for col in _TEXT_COLUMNS:
+        if col in new_df.columns:
+            new_df[col] = new_df[col].astype("string")
+    if "Страница" in new_df.columns:
+        new_df["Страница"] = pd.to_numeric(
+            new_df["Страница"], errors="coerce"
+        ).astype("Int64")
 
     if output_path.exists():
-        existing_df = pd.read_excel(str(output_path), engine="openpyxl")
+        existing_df = pd.read_excel(
+            str(output_path),
+            engine="openpyxl",
+            dtype=_READ_DTYPE,
+        )
+        if "Страница" in existing_df.columns:
+            existing_df["Страница"] = pd.to_numeric(
+                existing_df["Страница"], errors="coerce"
+            ).astype("Int64")
         df = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         df = new_df

@@ -25,6 +25,7 @@ Thumbs.db
 # Project
 output/*.xlsx
 data/input/*.pdf
+data/backup/*.pdf
 
 # Keep directories
 !data/input/.gitkeep

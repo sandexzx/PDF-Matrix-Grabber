@@ -4,13 +4,16 @@ from dataclasses import dataclass
 
 # GS (Group Separator) — разделитель полей в GS1
 GS = "\x1d"
+AI_SERIAL = "21"
+AI_KEYS = ("91", "93")
+AI_CRYPTO = "92"
 
 
 @dataclass
 class HonestMarkCode:
     """Структура кода маркировки Честный Знак.
 
-    Формат: 01 + GTIN(14) + 21 + Serial(до 20) + GS + 91 + Key(4) + 92 + Crypto(до 88)
+    Базовый формат: 01 + GTIN(14) + 21 + Serial(до 20) + [GS] + (91|93) + Key(4) + [92 + Crypto]
     """
 
     raw: str
@@ -40,7 +43,12 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
     result = HonestMarkCode(raw=raw_code)
 
     try:
-        code = raw_code
+        code = raw_code.strip()
+        # У некоторых сканеров в начале добавляется symbology id, например ]d2.
+        if code.startswith("]d2"):
+            code = code[3:]
+        if code.startswith(GS):
+            code = code[1:]
 
         # AI 01 — GTIN (всегда 14 цифр)
         if "01" in code:
@@ -54,35 +62,44 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
         else:
             return result
 
-        # AI 21 — Serial (переменная длина, до GS или до AI 91)
-        if code_rest.startswith("21"):
+        # AI 21 — Serial (переменная длина, до GS или до следующего AI)
+        if code_rest.startswith(AI_SERIAL):
             serial_data = code_rest[2:]
 
-            # Ищем конец серийника — GS-символ или AI 91
+            # Ищем конец серийника — GS-символ или служебные AI.
             gs_pos = serial_data.find(GS)
-            ai91_pos = serial_data.find("91")
+            ai_candidates = [serial_data.find(ai) for ai in (*AI_KEYS, AI_CRYPTO)]
+            ai_positions = [pos for pos in ai_candidates if pos != -1 and pos <= 20]
 
             if gs_pos != -1:
                 result.serial = serial_data[:gs_pos]
                 code_rest = serial_data[gs_pos + 1 :]
-            elif ai91_pos != -1 and ai91_pos <= 20:
-                result.serial = serial_data[:ai91_pos]
-                code_rest = serial_data[ai91_pos:]
+            elif ai_positions:
+                next_ai_pos = min(ai_positions)
+                result.serial = serial_data[:next_ai_pos]
+                code_rest = serial_data[next_ai_pos:]
             else:
                 result.serial = serial_data[:20]
                 code_rest = serial_data[20:]
 
-        # AI 91 — Ключ проверки (4 символа)
-        if "91" in code_rest:
-            idx = code_rest.index("91")
-            key = code_rest[idx + 2 : idx + 6]
+        # AI 91/93 — ключ проверки (4 символа)
+        key_ai = None
+        key_pos = -1
+        for ai in AI_KEYS:
+            pos = code_rest.find(ai)
+            if pos != -1 and (key_pos == -1 or pos < key_pos):
+                key_ai = ai
+                key_pos = pos
+
+        if key_ai is not None and key_pos != -1:
+            key = code_rest[key_pos + 2 : key_pos + 6]
             if len(key) == 4:
                 result.verification_key = key
-            code_rest = code_rest[idx + 6 :]
+            code_rest = code_rest[key_pos + 6 :]
 
         # AI 92 — Криптохвост (остаток)
-        if "92" in code_rest:
-            idx = code_rest.index("92")
+        if AI_CRYPTO in code_rest:
+            idx = code_rest.index(AI_CRYPTO)
             result.crypto = code_rest[idx + 2 :]
 
     except (ValueError, IndexError):
