@@ -24,6 +24,7 @@ Thumbs.db
 
 # Project
 output/*.xlsx
+output/*.xlsx.progress.csv
 data/input/*.pdf
 data/backup/*.pdf
 
