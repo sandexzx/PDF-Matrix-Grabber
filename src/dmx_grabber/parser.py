@@ -88,15 +88,14 @@ def parse_honest_mark(raw_code: str) -> HonestMarkCode:
     result = HonestMarkCode(raw=code)
 
     try:
-        # AI 01 — GTIN (всегда 14 цифр)
-        if "01" in code:
-            idx = code.index("01")
-            gtin = code[idx + 2 : idx + 16]
-            if len(gtin) == 14 and gtin.isdigit():
-                result.gtin = gtin
-                code_rest = code[idx + 16 :]
-            else:
-                return result
+        # AI 01 — GTIN (всегда 14 цифр, всегда в начале кода)
+        if not code.startswith("01"):
+            return result
+
+        gtin = code[2:16]
+        if len(gtin) == 14 and gtin.isdigit():
+            result.gtin = gtin
+            code_rest = code[16:]
         else:
             return result
 

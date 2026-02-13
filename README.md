@@ -10,6 +10,9 @@
 
 ```bash
 # Ubuntu / Debian
+sudo apt update && sudo apt install libdmtx0t64
+
+# Ubuntu / Debian (older releases)
 sudo apt install libdmtx0b
 
 # macOS
@@ -143,6 +146,7 @@ CSV-файл содержит только коды DataMatrix:
 - Увеличьте DPI: `--dpi 600`
 - Проверьте, что PDF содержит DataMatrix, а не QR-код
 - Убедитесь, что `libdmtx` установлена в системе
+  (`Ubuntu 24.04+`: `sudo apt install libdmtx0t64`)
 
 **Медленная работа:**
 - Увеличьте число воркеров: `-w 8`

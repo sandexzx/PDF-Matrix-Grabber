@@ -99,7 +99,8 @@ def _decode_single_page(
             ProcessingResult(
                 filename=filename,
                 page=display_page,
-                status=f"{Status.ERROR}: {e}",
+                status=Status.ERROR,
+                error_message=str(e),
             )
         ]
 
@@ -269,7 +270,8 @@ def run(
                                     ProcessingResult(
                                         filename=fname,
                                         page=display_page,
-                                        status=f"{Status.ERROR}: {e}",
+                                        status=Status.ERROR,
+                                        error_message=str(e),
                                     )
                                 ]
 

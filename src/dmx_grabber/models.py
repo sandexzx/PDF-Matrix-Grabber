@@ -23,7 +23,8 @@ class ProcessingResult:
     serial: str | None = None
     verification_key: str | None = None
     crypto: str | None = None
-    status: str = Status.OK
+    status: Status = Status.OK
+    error_message: str | None = None
 
 
 @dataclass

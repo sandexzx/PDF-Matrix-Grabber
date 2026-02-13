@@ -155,6 +155,24 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
 
+    # Валидация параметров
+    if args.dpi < 72:
+        console.print("[bold red]Ошибка:[/] DPI должен быть не менее 72")
+        return 1
+    if args.dpi > 1200:
+        console.print(
+            f"[yellow]Предупреждение:[/] DPI {args.dpi} очень высок — "
+            "это замедлит обработку и увеличит потребление памяти."
+        )
+
+    if args.workers < 1:
+        console.print("[bold red]Ошибка:[/] Количество воркеров должно быть не менее 1")
+        return 1
+
+    if args.limit is not None and args.limit < 1:
+        console.print("[bold red]Ошибка:[/] Лимит страниц должен быть не менее 1")
+        return 1
+
     # Баннер
     console.print(Text(BANNER, style="bold cyan"))
     console.print(

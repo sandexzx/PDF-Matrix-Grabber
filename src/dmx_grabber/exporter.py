@@ -5,7 +5,7 @@ import re
 
 import pandas as pd
 
-from .models import ProcessingResult
+from .models import ProcessingResult, Status
 
 # Сохраняем GS (0x1D), остальные управляющие символы экранируем.
 _ILLEGAL_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1C\x1E-\x1F]")
@@ -29,20 +29,11 @@ def _sanitize_csv_value(value: object) -> object:
     return value
 
 
-def _is_ok_status(status: object) -> bool:
-    """Определяет, что запись успешно декодирована."""
-    if status == "OK":
-        return True
-    if hasattr(status, "value") and getattr(status, "value") == "OK":
-        return True
-    return str(status) in {"OK", "Status.OK"}
-
-
 def _results_to_codes(results: list[ProcessingResult]) -> list[str]:
     """Оставляет только успешные, непустые DataMatrix-коды."""
     codes: list[str] = []
     for result in results:
-        if not _is_ok_status(result.status):
+        if result.status is not Status.OK:
             continue
         if not result.datamatrix_raw:
             continue
@@ -74,12 +65,13 @@ def _append_progress(results: list[ProcessingResult], output_path: Path) -> None
         return
 
     progress_path = _get_progress_path(output_path)
+    write_header = not progress_path.exists() or progress_path.stat().st_size == 0
     progress_df = pd.DataFrame(done_pages, columns=["filename", "page"])
     progress_df.to_csv(
         str(progress_path),
         index=False,
         mode="a",
-        header=not progress_path.exists(),
+        header=write_header,
     )
 
 
@@ -163,20 +155,28 @@ def load_progress(output_path: Path) -> set[tuple[str, int]]:
     if not output_path.exists():
         return set()
 
-    # fallback: старый формат xlsx с метаданными
-    try:
-        df = pd.read_excel(str(output_path), engine="openpyxl")
-        if "Файл" not in df.columns or "Страница" not in df.columns:
-            return set()
-        return {
-            (row["Файл"], int(row["Страница"]))
-            for _, row in df.iterrows()
-            if pd.notna(row.get("Страница"))
-        }
-    except Exception:
-        return set()
+    return set()
 
 
 # Backward compatibility для существующих импортов.
-export_to_excel = export_to_csv
-append_to_excel = append_to_csv
+import warnings as _warnings
+
+
+def export_to_excel(*args, **kwargs):
+    """Deprecated: используйте export_to_csv."""
+    _warnings.warn(
+        "export_to_excel переименована в export_to_csv и будет удалена в v1.0",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return export_to_csv(*args, **kwargs)
+
+
+def append_to_excel(*args, **kwargs):
+    """Deprecated: используйте append_to_csv."""
+    _warnings.warn(
+        "append_to_excel переименована в append_to_csv и будет удалена в v1.0",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return append_to_csv(*args, **kwargs)

@@ -9,10 +9,8 @@ dependencies = [
     "pylibdmtx>=0.1.10",
     "opencv-python-headless>=4.8.0",
     "pandas>=2.0.0",
-    "openpyxl>=3.1.0",
     "rich>=13.0.0",
-    "setuptools>=70.0.0",
 ]
 
 [project.scripts]
-dmx-grabber = "dmx_grabber.__main__:main"
+dmx-grabber = "dmx_grabber.cli:main"
