@@ -51,6 +51,18 @@ def _sanitize_excel_value(value: object) -> object:
     return value
 
 
+def _sort_results_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Сортирует строки результата по файлу и странице."""
+    sort_cols = [col for col in ("Файл", "Страница") if col in df.columns]
+    if not sort_cols:
+        return df
+    return df.sort_values(
+        by=sort_cols,
+        kind="stable",
+        na_position="last",
+    ).reset_index(drop=True)
+
+
 def _result_to_row(r: ProcessingResult) -> dict:
     """Преобразует один результат в строку для DataFrame."""
     return {
@@ -80,6 +92,7 @@ def export_to_excel(results: list[ProcessingResult], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [_result_to_row(r) for r in results]
     df = pd.DataFrame(rows, columns=COLUMNS)
+    df = _sort_results_df(df)
     df.to_excel(str(output_path), index=False, engine="openpyxl")
     return output_path
 
@@ -122,6 +135,7 @@ def append_to_excel(results: list[ProcessingResult], output_path: Path) -> None:
     else:
         df = new_df
 
+    df = _sort_results_df(df)
     df.to_excel(str(output_path), index=False, engine="openpyxl")
 
 
